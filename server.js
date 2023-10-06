@@ -8,10 +8,15 @@ const bodyParser = require('body-parser');
 const MongoClient = require('mongodb').MongoClient;
 // delete, modify 가능하게 하는 라이브러리
 const methodOverride = require('method-override')
+
+const http = require('http').createServer(app);
+const {Server} = require('socket.io');
+const io = new Server(http);
+
 app.use(methodOverride('_method'))
 app.use(bodyParser.urlencoded({extended : true}));
 app.set('vire engine', 'ejs');
-app.use('/public', express.static('public'));
+//app.use('/public', express.static('public'));
 require('dotenv').config();
 
 // driver 5.0 이상 버전에서 문법 바뀌어서 밑 코드로 하면 콜백 함수 실행을 안 함 -> API 4.0 으로 함
@@ -21,10 +26,17 @@ MongoClient.connect(process.env.DB_URL, function(에러, client) {
     if (에러) return console.log(에러)
     db = client.db('todoapp');
 
-    app.listen(process.env.PORT, function () {
+    http.listen(process.env.PORT, function () {
         console.log('listening on 8080')
     });
 });
+
+// client-side rendering
+app.use(express.static(path.join(__dirname, 'codingAppleReact/my-app/build')))
+
+app.get('/', function(req, res){
+    res.sendFile(path.join(__dirname, 'codingAppleReact/my-app/build/index.html'))
+})
 
 // function (요청, 응답)
 app.get('/pet', function(req, rep) {
@@ -36,10 +48,10 @@ app.get('/beauty', function(req, rep) {
     rep.send('beauty 용품을 쇼핑할 수 있는 페이지입니다.');
 })
 
-app.get('/', function(req, res) {
-    console.log(res);
-    res.render('index.ejs');
-})
+// app.get('/', function(req, res) {
+//     console.log(res);
+//     res.render('index.ejs');
+// })
 
 app.get('/write', function(req, res) {
     //console.log(res);
@@ -251,3 +263,112 @@ app.delete('/delete', function(req, res){
 // 유지보수가 쉬워짐. router 나누는 거 은근 자주 사용한다.
 app.use('/shop', require('./routes/shop.js'));
 app.use('/board/sub', require('./routes/board.js'));
+
+
+let multer = require('multer');
+var storage = multer.diskStorage({  // 램에다가 저장해주세요-> 휘발성.
+
+    destination : function(req, file, cb){
+        cb(null, './public/image')
+    },
+    filename : function(req, file, cb){
+        cb(null, file.originalname + '날짜' + newDate())
+    }
+}); 
+
+// 미들웨어처럼 실행해주면 됨.
+var upload = multer({storage : storage});
+
+app.get('/upload', function(req, res) {
+    res.render('upload.ejs');
+})
+
+// profile : input data 의 이름.
+app.post('/upload', upload.single('profile'), function(req, res){
+    res.send('업로드완료');
+})
+
+app.get('/image/:imageName', function(req, res) {
+    res.sendFile(__dirname + '/public/image/' + req.params.imageName);
+})
+// 포스트가 안 됨 쉬팔... 왜 안 되는지 모르겠다
+app.post('/chatroom', ConfirmLogin, function(요청, 응답){
+
+    var 저장할거 = {
+    title : '무슨무슨채팅방',
+    member : [ObjectId(요청.body.당한사람id), 요청.user._id],
+    date : new Date(),
+    }
+
+    db.collection('chatroom').insertOne(저장할거)
+    .then(function(결과){
+    응답.send('저장완료')
+    });
+});
+
+app.get('/chat', ConfirmLogin, function(req, res) {
+    db.collection('chatroom').find({member : req.user._id}).toArray().then((re) => {
+        res.render('chat.ejs', {data : re})
+    })
+})
+
+app.post('message', ConfirmLogin, function(req, res) {
+    var 저장할거 = {
+        parent : req.body.parent,
+        content : req.body.content,
+        userid : req.user._id,
+        date : new Date(),
+    }
+
+    db.collection('message').insertOne(저장할거).then(()=>{
+        console.log('DB 저장 성공');
+        req.send('응답 성공');
+    })
+})
+
+app.get('/message/:id', ConfirmLogin, function(req, res) {
+    req.writeHead(200, {
+        "Connection" : "keep-alive",
+        "Content-Type" : "text/event-stream",
+        "Cache-Control" : "no-cache",
+    });
+
+    db.collection('message').find({parent : req.params.id}).toArray()
+    .then((re) => {
+        res.write('event : test\n');
+        // JSON은 문자 취급을 받는다.
+        res.write('data : ' + JSON.stringify(re) + '\n\n');
+    })
+
+    const pipeline = [
+        { $match : { 'fullDocument.parent' : req.params.id } }
+    ];
+    const collection = db.collection('message');
+    const changeStream = collection.watch(pipeline);
+    changeStream.on('change', (result) => {
+        req.write('data: ' + JSON.stringify(result.fullDocument) + '\n\n');
+    })
+
+})
+
+app.get('/socket', function(req, res) {
+    res.render('socket.ejs');
+})
+
+io.on('connection', function(socket) {
+    console.log('유저접속됨');
+
+    socket.on('room1-send', function(data) {
+        io.to('room1').emit('broadcast', data);
+    });
+
+    // 채팅방 생성하고 user 집어넣어 줌.
+    socket.on('joinroom', function(data) {
+        socket.join('room1');
+    });
+
+    // data (메세지)를 여기저기 다 뿌림
+    socket.on('user-send', function(data) {
+        io.emit('broadcast', data)
+    });
+})
